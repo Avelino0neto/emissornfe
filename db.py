@@ -29,11 +29,9 @@ class Message(Base):
 
 
 def make_async_url(sync_url: str) -> str:
-    """
-    Converte 'postgresql://...' para 'postgresql+asyncpg://...'
-    (necessário para SQLAlchemy assíncrono)
-    """
-    return re.sub(r"^postgresql:", "postgresql+asyncpg:", sync_url)
+    cleaned = re.sub(r'\?.*', '', sync_url)
+    return re.sub(r"^postgresql:", "postgresql+asyncpg:", cleaned)
+
 
 
 def make_engine(sync_database_url: str) -> AsyncEngine:
