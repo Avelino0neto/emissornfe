@@ -2,6 +2,8 @@
 import os
 import streamlit as st
 import db  # seu db.py síncrono
+import os, base64, tempfile, stat
+from sqlalchemy.orm import Session
 
 # -------------------- LOGIN GATE --------------------
 def require_login():
@@ -42,6 +44,31 @@ def require_login():
 require_login()
 # ------------------ FIM LOGIN GATE ------------------
 
+
+def materialize_cert_from_secrets() -> tuple[str, str]:
+    """Cria um .pfx temporário a partir dos Secrets e retorna (path, senha)."""
+    try:
+        pfx_b64 = st.secrets["cert"]["pfx_b64"]
+        pwd = st.secrets["cert"]["password"]
+    except Exception:
+        st.error("Secrets do certificado não encontrados. Defina [cert].")
+        st.stop()
+
+    # arquivo temporário exclusivo
+    fd, pfx_path = tempfile.mkstemp(suffix=".pfx")
+    os.close(fd)
+    with open(pfx_path, "wb") as f:
+        f.write(base64.b64decode(pfx_b64))
+
+    # restringe permissões (Linux no Streamlit Cloud). No Windows local, ignora silenciosamente.
+    try:
+        os.chmod(pfx_path, stat.S_IRUSR | stat.S_IWUSR)
+    except Exception:
+        pass
+
+    return pfx_path, pwd
+
+
 st.set_page_config(page_title="NFe App", page_icon="🧾")
 st.title("Emissor NFe (demo)")
 st.caption("Acesso restrito • Streamlit + Neon")
@@ -72,39 +99,18 @@ def get_engine():
 engine = get_engine()
 db.init_db(engine)
 
-# --------- UI mínima (campo + botão) ----------
-st.subheader("Cadastrar mensagem de teste")
-with st.form("f_msg"):
-    content = st.text_input("Mensagem")
-    s1 = st.form_submit_button("Enviar")
-if s1:
-    if not content.strip():
-        st.warning("Digite algo.")
-    else:
-        try:
-            new_id = db.insert_message(engine, content.strip())
-            st.success(f"Salvo! id={new_id}")
-        except Exception as e:
-            st.error(f"Falha ao salvar: {e}")
 
-# --------- (Opcional) Upload de XML NFe ----------
-st.subheader("Upload de XML de NFe")
-xml_file = st.file_uploader("Selecione um arquivo .xml", type=["xml"])
-if xml_file is not None:
-    # Aqui você pode ler o conteúdo e salvar no banco.
-    # Exemplo simples: armazenar o XML cru numa tabela (você pode criar outra tabela no db.py)
-    xml_bytes = xml_file.read()
-    st.info(f"Arquivo {xml_file.name} com {len(xml_bytes)} bytes carregado (exemplo).")
-    # TODO: parsear, validar e inserir no banco conforme seu modelo
-
-# --------- Últimos registros ----------
-st.subheader("Últimas mensagens")
-try:
-    rows = db.fetch_recent(engine, 5)
-    if rows:
-        for r in rows:
-            st.write(f"• #{r['id']} — {r['content']}  _(em {r['created_at']})_")
-    else:
-        st.write("Ainda não há mensagens.")
-except Exception as e:
-    st.error(f"Falha ao listar: {e}")
+# importação de uma linha (exemplo)
+if st.button("Importar linha de exemplo"):
+    with Session(engine) as s, s.begin():
+        res = db.import_row(
+            s,
+            store_id="loja_a",
+            name="PIMENTAO VERDE PCT",
+            code="",             # sem código -> vai tentar alias/fuzzy
+            ncm="07096000",
+            unit="KG",
+            cst_icms="Sim",
+            min_fuzzy_score=90   # só sugere se >= 90
+        )
+    st.write(res)
