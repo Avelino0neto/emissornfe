@@ -1,8 +1,20 @@
+import re
+from datetime import datetime
+from decimal import Decimal
+
 import requests
+import streamlit as st
+from lxml import etree
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 import db
+from pynfe.entidades import Emitente, Cliente, NotaFiscal
+from pynfe.entidades.evento import EventoCancelarNota
+from pynfe.processamento.serializacao import SerializacaoXML, _fonte_dados
+from pynfe.utils.assinatura import AssinaturaA1
+
+CODIGO_BRASIL = "1058"
 
 
 def extrair_dados_cnpj(cnpj: str) -> dict:
@@ -92,3 +104,467 @@ def importar_cliente_por_cnpj(session: Session, cnpj: str) -> dict:
 
     client = upsert_client(session, dados)
     return {"status": "ok", "client_id": client.id}
+
+
+def get_emitente_data() -> dict:
+    """
+    Lê os dados do emitente definidos nos secrets ([emitente]).
+    """
+    try:
+        emitente = dict(st.secrets["emitente"])
+    except Exception as exc:
+        raise RuntimeError('Dados do emitente nao encontrados em st.secrets["emitente"].') from exc
+
+    required = ["cnpj", "razao_social", "logradouro", "numero", "bairro", "cidade", "uf", "cep"]
+    for campo in required:
+        if not emitente.get(campo):
+            raise RuntimeError(f"Campo obrigatorio do emitente ausente: {campo}")
+    return emitente
+
+
+def limpar_documento(valor: str | None) -> str:
+    return re.sub(r"\D", "", valor or "")
+
+
+def criar_emitente_pynfe():
+    """Cria objeto Emitente usando dados de secrets."""
+    empresa = get_emitente_data()
+
+    regime_map = {"Simples Nacional": "1", "MEI": "4", "Normal": "3"}
+    nfe_optante = st.session_state.get("nfe_optante", "Simples Nacional")
+    regime = regime_map.get(nfe_optante, "1")
+
+    return Emitente(
+        razao_social=empresa["razao_social"],
+        nome_fantasia=empresa.get("nome_fantasia") or empresa["razao_social"],
+        cnpj=limpar_documento(empresa["cnpj"]),
+        codigo_de_regime_tributario=regime,
+        inscricao_estadual=empresa.get("inscricao_estadual") or "",
+        endereco_logradouro=empresa["logradouro"],
+        endereco_numero=empresa["numero"],
+        endereco_bairro=empresa["bairro"],
+        endereco_municipio=empresa["cidade"],
+        endereco_uf=empresa["uf"],
+        endereco_cep=empresa["cep"],
+        endereco_pais=CODIGO_BRASIL,
+    )
+
+
+def criar_cliente_pynfe(session: Session, cliente_id: int | None = None):
+    """Cria objeto Cliente usando dados do ORM."""
+    cliente_id = cliente_id or st.session_state.get("cliente_id")
+    if not cliente_id:
+        raise ValueError("Nenhum cliente selecionado.")
+
+    cliente = session.get(db.Client, cliente_id)
+    if not cliente:
+        raise ValueError("Cliente nao encontrado no banco.")
+
+    documento = limpar_documento(cliente.documento)
+    tipo_documento = "CPF" if len(documento) == 11 else "CNPJ"
+    indicador_ie = "1" if cliente.inscricao_estadual else "9"
+
+    return Cliente(
+        razao_social=cliente.nome,
+        tipo_documento=tipo_documento,
+        email=cliente.email or "",
+        numero_documento=documento,
+        indicador_ie=indicador_ie,
+        endereco_logradouro=cliente.logradouro or "",
+        endereco_numero=cliente.numero or "",
+        endereco_complemento=cliente.endereco_complemento or "",
+        endereco_bairro=cliente.bairro or "",
+        endereco_municipio=cliente.cidade or "",
+        endereco_uf=cliente.uf or "",
+        endereco_cep=cliente.cep or "",
+        endereco_pais=CODIGO_BRASIL,
+        endereco_telefone=cliente.telefone or "",
+    )
+
+
+def criar_notafiscal_pynfe(
+    session: Session,
+    nfe_data,
+    nfe_numero,
+    nfe_serie,
+    nfe_natureza,
+    nfe_tipo,
+    nfe_finalidade,
+    nfe_consumidor,
+    nfe_presenca,
+    forma_pagamento,
+    cliente_id: int | None = None,
+):
+    """Cria objeto NotaFiscal usando dados do formulário."""
+    emitente = criar_emitente_pynfe()
+    cliente = criar_cliente_pynfe(session, cliente_id)
+    empresa = get_emitente_data()
+    municipio_ibge = empresa.get("ibge_id", "3502804")
+
+    tipo_documento_map = {"Saída": 1, "Entrada": 0}
+    finalidade_map = {"Normal": "1", "Complementar": "2", "Ajuste": "3", "Devolução": "4"}
+    cliente_final_map = {"Sim": 1, "Não": 0}
+    presenca_map = {"Presencial": 1, "Internet": 2, "Teleatendimento": 3, "Não se aplica": 9}
+    forma_pagamento_map = {
+        "Dinheiro": 0,
+        "Cartão de Crédito": 0,
+        "Cartão de Débito": 0,
+        "PIX": 0,
+        "Boleto": 1,
+        "Transferência": 0,
+    }
+
+    total_tributos = Decimal("0.0")
+    for produto in st.session_state.get("produtos", []):
+        total_tributos += Decimal(str(produto["valor_total"])) * Decimal("0.15")
+
+    nfe_data_datetime = datetime.combine(nfe_data, datetime.min.time()) if nfe_data else datetime.now()
+
+    return NotaFiscal(
+        emitente=emitente,
+        cliente=cliente,
+        uf=empresa["uf"].upper(),
+        natureza_operacao=nfe_natureza or "Venda de mercadorias",
+        forma_pagamento=forma_pagamento_map.get(forma_pagamento or "Dinheiro", 0),
+        tipo_pagamento=1,
+        modelo=55,
+        serie=str(nfe_serie) if nfe_serie else "1",
+        numero_nf=str(nfe_numero) if nfe_numero else "1",
+        data_emissao=nfe_data_datetime,
+        data_saida_entrada=nfe_data_datetime,
+        tipo_documento=tipo_documento_map.get(nfe_tipo or "Saída", 1),
+        municipio=municipio_ibge,
+        tipo_impressao_danfe=1,
+        forma_emissao="1",
+        cliente_final=cliente_final_map.get((nfe_consumidor or "Não").strip(), 0),
+        indicador_destino=1,
+        indicador_presencial=presenca_map.get(nfe_presenca or "Presencial", 1),
+        finalidade_emissao=finalidade_map.get(nfe_finalidade or "Normal", "1"),
+        processo_emissao="0",
+        transporte_modalidade_frete=9,
+        informacoes_adicionais_interesse_fisco="NFe emitida pelo Sistema PyNFe",
+        totais_tributos_aproximado=total_tributos,
+    )
+
+
+def adicionar_produtos_pynfe(nota_fiscal):
+    """Adiciona produtos à NotaFiscal usando dados do st.session_state.produtos."""
+    if not st.session_state.get("produtos"):
+        raise ValueError("Nenhum produto foi adicionado. Adicione pelo menos um produto/serviço.")
+
+    regime = st.session_state.get("nfe_optante", "Simples Nacional")
+
+    for i, produto in enumerate(st.session_state.produtos):
+        campos_obrigatorios = {
+            "codigo": "Código do produto",
+            "nome": "Nome/Descrição",
+            "ncm": "NCM",
+            "cfop": "CFOP",
+            "unidade": "Unidade",
+            "quantidade": "Quantidade",
+            "valor_unitario": "Valor unitário",
+            "valor_total": "Valor total",
+            "cst_pis": "CST PIS",
+            "cst_cofins": "CST COFINS",
+        }
+        if regime in ["Simples Nacional", "MEI"]:
+            campos_obrigatorios["icms_csosn"] = "ICMS CSOSN"
+        else:
+            campos_obrigatorios["cst_icms"] = "CST ICMS"
+
+        for campo, nome_campo in campos_obrigatorios.items():
+            if not produto.get(campo) or str(produto.get(campo)).strip() == "":
+                raise ValueError(f"Produto {i+1}: Campo '{nome_campo}' não foi preenchido.")
+
+        nota_fiscal.adicionar_produto_servico(
+            codigo=produto["codigo"],
+            descricao=produto["nome"],
+            ncm=produto["ncm"],
+            cfop=produto["cfop"],
+            unidade_comercial=produto["unidade"],
+            quantidade_comercial=Decimal(str(produto["quantidade"])),
+            valor_unitario_comercial=Decimal(str(produto["valor_unitario"])),
+            valor_total_bruto=Decimal(str(produto["valor_total"])),
+            unidade_tributavel=produto["unidade"],
+            quantidade_tributavel=Decimal(str(produto["quantidade"])),
+            valor_unitario_tributavel=Decimal(str(produto["valor_unitario"])),
+            ind_total=1,
+            icms_modalidade=produto.get("icms_csosn") if regime in ["Simples Nacional", "MEI"] else produto.get("cst_icms"),
+            icms_origem=0,
+            icms_csosn=produto.get("icms_csosn") if regime in ["Simples Nacional", "MEI"] else None,
+            pis_modalidade=produto["cst_pis"],
+            cofins_modalidade=produto["cst_cofins"],
+            valor_tributos_aprox=str(
+                round(Decimal(str(produto["valor_total"])) * Decimal("0.15"), 2)
+            ),
+        )
+
+    return nota_fiscal
+
+
+def criar_nfe_pynfe(
+    session: Session,
+    nfe_data,
+    nfe_numero,
+    nfe_serie,
+    nfe_natureza,
+    nfe_tipo,
+    nfe_finalidade,
+    nfe_consumidor,
+    nfe_presenca,
+    forma_pagamento,
+    homologacao,
+    cliente_id: int | None = None,
+):
+    """Cria a NFe completa."""
+    import traceback
+
+    try:
+        try:
+            nota_fiscal = criar_notafiscal_pynfe(
+                session,
+                nfe_data,
+                nfe_numero,
+                nfe_serie,
+                nfe_natureza,
+                nfe_tipo,
+                nfe_finalidade,
+                nfe_consumidor,
+                nfe_presenca,
+                forma_pagamento,
+                cliente_id=cliente_id,
+            )
+        except Exception as e:
+            error_details = traceback.format_exc()
+            return {
+                "sucesso": False,
+                "erro": f"Erro ao criar NotaFiscal: {type(e).__name__}: {str(e)}",
+                "erro_completo": f"ERRO NO PASSO 1 - CRIAR NOTAFISCAL:\n{error_details}",
+                "nota_fiscal": None,
+            }
+
+        try:
+            nota_fiscal = adicionar_produtos_pynfe(nota_fiscal)
+        except Exception as e:
+            error_details = traceback.format_exc()
+            return {
+                "sucesso": False,
+                "erro": f"Erro ao adicionar produtos: {type(e).__name__}: {str(e)}",
+                "erro_completo": f"ERRO NO PASSO 2 - ADICIONAR PRODUTOS:\n{error_details}",
+                "nota_fiscal": None,
+            }
+
+        try:
+            serializador = SerializacaoXML(_fonte_dados, homologacao=homologacao)
+            nfe_xml = serializador.exportar()
+        except Exception as e:
+            error_details = traceback.format_exc()
+            return {
+                "sucesso": False,
+                "erro": f"Erro na serialização XML: {type(e).__name__}: {str(e)}",
+                "erro_completo": f"ERRO NO PASSO 3 - SERIALIZAÇÃO:\nHomologação={homologacao}\n{error_details}",
+                "nota_fiscal": None,
+            }
+
+        if not st.session_state.get("certificado_path") or not st.session_state.get("senha_certificado"):
+            return {
+                "sucesso": False,
+                "erro": "Certificado não configurado",
+                "erro_completo": (
+                    "ERRO NO PASSO 4 - VERIFICAÇÃO CERTIFICADO:\n"
+                    f"Certificado path: {st.session_state.get('certificado_path')}\n"
+                    f"Senha configurada: {bool(st.session_state.get('senha_certificado'))}"
+                ),
+                "nota_fiscal": None,
+            }
+
+        try:
+            a1 = AssinaturaA1(st.session_state.certificado_path, st.session_state.senha_certificado)
+            xml_assinado = a1.assinar(nfe_xml)
+        except Exception as e:
+            error_details = traceback.format_exc()
+            return {
+                "sucesso": False,
+                "erro": f"Erro na assinatura digital: {type(e).__name__}: {str(e)}",
+                "erro_completo": (
+                    "ERRO NO PASSO 5 - ASSINATURA:\n"
+                    f"Certificado: {st.session_state.certificado_path}\n{error_details}"
+                ),
+                "nota_fiscal": None,
+            }
+        ##CODEIA NÃO ALTERAR essas linhas
+        ##Visualização do XML apagar depois dos teste
+        xml_n_ass = etree.tostring(xml_assinado, encoding="unicode")
+        with open(f"{nota_fiscal.numero_nf} - Nota.xml", "w", encoding="utf-8") as file:
+            file.write(xml_n_ass)
+        ##fim da visualização
+
+        if not st.session_state.comunicacao:
+            return {
+                "sucesso": False,
+                "erro": "Conexão com SEFAZ não configurada",
+                "erro_completo": "ERRO NO PASSO 6 - VERIFICAÇÃO COMUNICAÇÃO:\nComunicação SEFAZ não está configurada",
+                "nota_fiscal": None,
+            }
+
+        try:
+            resultado = st.session_state.comunicacao.autorizacao(modelo="nfe", nota_fiscal=xml_assinado)
+
+            return {
+                "sucesso": resultado[0] == 0,
+                "resultado": resultado,
+                "nota_fiscal": nota_fiscal,
+                "xml_assinado": xml_assinado,
+                "resultado_codigo": resultado[0] if resultado else "N/A",
+                "resultado_detalhes": f"Código retorno: {resultado[0] if resultado else 'N/A'}",
+            }
+        except Exception as e:
+            error_details = traceback.format_exc()
+            return {
+                "sucesso": False,
+                "erro": f"Erro no envio para SEFAZ: {type(e).__name__}: {str(e)}",
+                "erro_completo": (
+                    "ERRO NO PASSO 7 - ENVIO SEFAZ:\n"
+                    f"Tipo comunicação: {type(st.session_state.comunicacao)}\n{error_details}"
+                ),
+                "nota_fiscal": None,
+            }
+
+    except Exception as e:
+        import traceback as tb
+
+        error_details = tb.format_exc()
+        return {
+            "sucesso": False,
+            "erro": f"Erro geral não tratado: {type(e).__name__}: {str(e)}",
+            "erro_completo": f"ERRO GERAL NÃO TRATADO:\n{error_details}",
+            "nota_fiscal": None,
+        }
+
+
+def cancelar_nfe(chave_cancelamento, protocolo_cancelamento, justificativa, homologacao):
+    """Cancela uma NFe usando a estrutura PyNFe."""
+    import traceback
+
+    try:
+        if not chave_cancelamento or len(chave_cancelamento) != 44:
+            return {"sucesso": False, "erro": "Chave de acesso deve ter exatamente 44 dígitos", "cStat": None, "xMotivo": None}
+
+        if not protocolo_cancelamento:
+            return {"sucesso": False, "erro": "Protocolo de autorização é obrigatório", "cStat": None, "xMotivo": None}
+
+        if not justificativa or len(justificativa.strip()) < 15:
+            return {"sucesso": False, "erro": "Justificativa deve ter pelo menos 15 caracteres", "cStat": None, "xMotivo": None}
+
+        if not st.session_state.get("certificado_path") or not st.session_state.get("senha_certificado"):
+            return {"sucesso": False, "erro": "Certificado não configurado", "cStat": None, "xMotivo": None}
+
+        if not st.session_state.comunicacao:
+            return {"sucesso": False, "erro": "Conexão com SEFAZ não configurada", "cStat": None, "xMotivo": None}
+
+        empresa = get_emitente_data()
+        uf = empresa["uf"].upper()
+
+        try:
+            cancelar = EventoCancelarNota(
+                cnpj=limpar_documento(empresa["cnpj"]),
+                chave=chave_cancelamento,
+                data_emissao=datetime.now(),
+                uf=uf,
+                protocolo=protocolo_cancelamento,
+                justificativa=justificativa.strip(),
+            )
+
+        except Exception as e:
+            error_details = traceback.format_exc()
+            return {
+                "sucesso": False,
+                "erro": f"Erro ao criar evento de cancelamento: {type(e).__name__}: {str(e)}",
+                "erro_completo": f"ERRO NO PASSO 1 - CRIAR EVENTO:\n{error_details}",
+                "cStat": None,
+                "xMotivo": None,
+            }
+
+        try:
+            serializador = SerializacaoXML(_fonte_dados, homologacao=homologacao)
+            nfe_cancel = serializador.serializar_evento(cancelar)
+
+        except Exception as e:
+            error_details = traceback.format_exc()
+            return {
+                "sucesso": False,
+                "erro": f"Erro na serialização do evento: {type(e).__name__}: {str(e)}",
+                "erro_completo": f"ERRO NO PASSO 2 - SERIALIZAÇÃO:\n{error_details}",
+                "cStat": None,
+                "xMotivo": None,
+            }
+
+        try:
+            a1 = AssinaturaA1(st.session_state.certificado_path, st.session_state.senha_certificado)
+            xml_assinado = a1.assinar(nfe_cancel)
+
+        except Exception as e:
+            error_details = traceback.format_exc()
+            return {
+                "sucesso": False,
+                "erro": f"Erro na assinatura digital: {type(e).__name__}: {str(e)}",
+                "erro_completo": f"ERRO NO PASSO 3 - ASSINATURA:\n{error_details}",
+                "cStat": None,
+                "xMotivo": None,
+            }
+
+        try:
+            envio = st.session_state.comunicacao.evento(modelo="nfe", evento=xml_assinado)
+
+            if hasattr(envio, "text"):
+                response_text = envio.text
+                import re as _re
+
+                codigos = _re.findall(r"<cStat>(\d+)</cStat>", response_text)
+                motivos = _re.findall(r"<xMotivo>(.*?)</xMotivo>", response_text)
+
+                if codigos and motivos:
+                    cStat = codigos[-1]
+                    xMotivo = motivos[-1]
+                    sucesso = cStat in ["135", "136"]
+
+                    return {
+                        "sucesso": sucesso,
+                        "cStat": cStat,
+                        "xMotivo": xMotivo,
+                        "response_text": response_text,
+                        "erro": None if sucesso else f"SEFAZ rejeitou o cancelamento: {cStat} - {xMotivo}",
+                    }
+                else:
+                    return {
+                        "sucesso": False,
+                        "erro": "Não foi possível processar a resposta da SEFAZ",
+                        "cStat": None,
+                        "xMotivo": None,
+                        "response_text": response_text,
+                    }
+            else:
+                return {"sucesso": False, "erro": "Resposta inválida da SEFAZ", "cStat": None, "xMotivo": None}
+
+        except Exception as e:
+            error_details = traceback.format_exc()
+            return {
+                "sucesso": False,
+                "erro": f"Erro no envio para SEFAZ: {type(e).__name__}: {str(e)}",
+                "erro_completo": f"ERRO NO PASSO 4 - ENVIO SEFAZ:\n{error_details}",
+                "cStat": None,
+                "xMotivo": None,
+            }
+
+    except Exception as e:
+        import traceback as tb
+
+        error_details = tb.format_exc()
+        return {
+            "sucesso": False,
+            "erro": f"Erro geral não tratado: {type(e).__name__}: {str(e)}",
+            "erro_completo": f"ERRO GERAL NÃO TRATADO:\n{error_details}",
+            "cStat": None,
+            "xMotivo": None,
+        }
+

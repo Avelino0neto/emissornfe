@@ -69,6 +69,39 @@ class ProductInbox(Base):
         Index("ix_inbox_store", "store_id"),
     )
 
+class Client(Base):
+    __tablename__ = "clients"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    documento: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
+    nome: Mapped[str] = mapped_column(Text, nullable=False)
+    nome_fantasia: Mapped[Optional[str]] = mapped_column(Text)
+    logradouro: Mapped[Optional[str]] = mapped_column(Text)
+    numero: Mapped[Optional[str]] = mapped_column(String(32))
+    bairro: Mapped[Optional[str]] = mapped_column(Text)
+    inscricao_estadual: Mapped[Optional[str]] = mapped_column(String(32))
+    cidade: Mapped[Optional[str]] = mapped_column(Text)
+    uf: Mapped[Optional[str]] = mapped_column(String(8))
+    cep: Mapped[Optional[str]] = mapped_column(String(16))
+    endereco_complemento: Mapped[Optional[str]] = mapped_column(Text)
+    endereco_pais: Mapped[Optional[str]] = mapped_column(Text)
+    ibge_id: Mapped[Optional[str]] = mapped_column(String(16))
+    telefone: Mapped[Optional[str]] = mapped_column(String(32))
+    email: Mapped[Optional[str]] = mapped_column(String(128))
+
+class NfeXml(Base):
+    __tablename__ = "nfe_xmls"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    client_id: Mapped[int] = mapped_column(ForeignKey("clients.id"), nullable=False, index=True)
+    numero: Mapped[str] = mapped_column(String(64), nullable=False)
+    valor_total: Mapped[Optional[float]] = mapped_column(Numeric(14, 2))
+    emitida_em: Mapped[Optional[str]] = mapped_column(String(32))
+    xml_text: Mapped[str] = mapped_column(Text, nullable=False)
+    hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+
+    client: Mapped[Client] = relationship("Client")
+
 # -------- Engine / init --------
 def make_engine(database_url: str):
     # psycopg2-binary aceita ?sslmode=require; deixe como veio do Neon
