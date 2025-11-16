@@ -1,6 +1,10 @@
+from __future__ import annotations
+
+import hashlib
 import re
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
+from typing import Any
 
 import requests
 import streamlit as st
@@ -15,6 +19,29 @@ from pynfe.processamento.serializacao import SerializacaoXML, _fonte_dados
 from pynfe.utils.assinatura import AssinaturaA1
 
 CODIGO_BRASIL = "1058"
+NFE_NS = {"nfe": "http://www.portalfiscal.inf.br/nfe"}
+XML_PARSER = etree.XMLParser(remove_blank_text=True, recover=True)
+
+
+def _text(node, path, default="") -> str:
+    if node is None:
+        return default
+    try:
+        elem = node.find(path, NFE_NS)
+    except etree.XPathEvalError:
+        return default
+    if elem is None or elem.text is None:
+        return default
+    return elem.text.strip()
+
+
+def _safe_decimal(value: str | None) -> Decimal | None:
+    if not value:
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
 
 
 def extrair_dados_cnpj(cnpj: str) -> dict:
@@ -106,6 +133,79 @@ def importar_cliente_por_cnpj(session: Session, cnpj: str) -> dict:
     return {"status": "ok", "client_id": client.id}
 
 
+def parse_nfe_xml(xml_bytes: bytes) -> dict[str, Any]:
+    """
+    Extrai dados principais (destinatário, produtos, totais) de um XML de NFe.
+    """
+    root = etree.fromstring(xml_bytes, parser=XML_PARSER)
+    ide = root.find(".//nfe:ide", NFE_NS)
+    inf_nfe = root.find(".//nfe:infNFe", NFE_NS)
+
+    numero = _text(ide, "nfe:nNF")
+    serie = _text(ide, "nfe:serie")
+    data_emissao = _text(ide, "nfe:dhEmi") or _text(ide, "nfe:dEmi")
+    valor_total = _text(root, ".//nfe:ICMSTot/nfe:vNF")
+    chave = ""
+    if inf_nfe is not None:
+        chave = (inf_nfe.get("Id") or "").replace("NFe", "")
+
+    dest = root.find(".//nfe:dest", NFE_NS)
+    end_dest = dest.find("nfe:enderDest", NFE_NS) if dest is not None else None
+    destinatario = {
+        "documento": _text(dest, "nfe:CNPJ") or _text(dest, "nfe:CPF"),
+        "nome": _text(dest, "nfe:xNome"),
+        "nome_fantasia": _text(dest, "nfe:xFant") or None,
+        "logradouro": _text(end_dest, "nfe:xLgr"),
+        "numero": _text(end_dest, "nfe:nro"),
+        "bairro": _text(end_dest, "nfe:xBairro"),
+        "inscricao_estadual": _text(dest, "nfe:IE"),
+        "cidade": _text(end_dest, "nfe:xMun"),
+        "uf": _text(end_dest, "nfe:UF"),
+        "cep": _text(end_dest, "nfe:CEP"),
+        "endereco_complemento": _text(end_dest, "nfe:xCpl"),
+        "endereco_pais": _text(end_dest, "nfe:xPais"),
+        "ibge_id": _text(end_dest, "nfe:cMun"),
+        "telefone": _text(dest, "nfe:fone"),
+        "email": _text(dest, "nfe:email"),
+    }
+
+    produtos: list[dict[str, Any]] = []
+    for det in root.findall(".//nfe:det", NFE_NS):
+        prod = det.find("nfe:prod", NFE_NS)
+        imposto_icms = det.find(".//nfe:ICMS", NFE_NS)
+        cst_icms = "40"
+        if imposto_icms is not None:
+            for child in list(imposto_icms):
+                cst_tmp = _text(child, "nfe:CST") or _text(child, "nfe:CSOSN")
+                if cst_tmp:
+                    cst_icms = cst_tmp
+                    break
+
+        produtos.append(
+            {
+                "codigo": _text(prod, "nfe:cProd"),
+                "nome": _text(prod, "nfe:xProd"),
+                "ncm": _text(prod, "nfe:NCM"),
+                "cfop": _text(prod, "nfe:CFOP"),
+                "unidade": _text(prod, "nfe:uCom") or "UN",
+                "quantidade": _text(prod, "nfe:qCom"),
+                "valor_unitario": _text(prod, "nfe:vUnCom"),
+                "valor_total": _text(prod, "nfe:vProd"),
+                "cst_icms": cst_icms or "40",
+            }
+        )
+
+    return {
+        "numero": numero,
+        "serie": serie,
+        "data_emissao": data_emissao,
+        "valor_total": valor_total,
+        "chave": chave,
+        "destinatario": destinatario,
+        "produtos": produtos,
+    }
+
+
 def get_emitente_data() -> dict:
     """
     Lê os dados do emitente definidos nos secrets ([emitente]).
@@ -130,15 +230,11 @@ def criar_emitente_pynfe():
     """Cria objeto Emitente usando dados de secrets."""
     empresa = get_emitente_data()
 
-    regime_map = {"Simples Nacional": "1", "MEI": "4", "Normal": "3"}
-    nfe_optante = st.session_state.get("nfe_optante", "Simples Nacional")
-    regime = regime_map.get(nfe_optante, "1")
-
     return Emitente(
         razao_social=empresa["razao_social"],
         nome_fantasia=empresa.get("nome_fantasia") or empresa["razao_social"],
         cnpj=limpar_documento(empresa["cnpj"]),
-        codigo_de_regime_tributario=regime,
+        codigo_de_regime_tributario="3",
         inscricao_estadual=empresa.get("inscricao_estadual") or "",
         endereco_logradouro=empresa["logradouro"],
         endereco_numero=empresa["numero"],
@@ -247,12 +343,80 @@ def criar_notafiscal_pynfe(
     )
 
 
+def importar_xml_document(session: Session, xml_bytes: bytes, filename: str | None = None) -> dict[str, Any]:
+    """
+    Salva um XML de NFe na tabela nfe_xmls e importa cliente/produtos.
+    """
+    xml_hash = hashlib.sha256(xml_bytes).hexdigest()
+    existing = session.scalars(select(db.NfeXml).where(db.NfeXml.hash == xml_hash)).first()
+    if existing:
+        nome_cliente = None
+        if existing.client_id:
+            cliente = session.get(db.Client, existing.client_id)
+            nome_cliente = cliente.nome if cliente else None
+        return {
+            "status": "duplicated",
+            "hash": xml_hash,
+            "numero": existing.numero,
+            "cliente": nome_cliente,
+            "arquivo": filename,
+        }
+
+    parsed = parse_nfe_xml(xml_bytes)
+    if not parsed["destinatario"].get("documento"):
+        raise ValueError("Documento do destinatario nao encontrado no XML.")
+
+    cliente = upsert_client(session, parsed["destinatario"])
+    store_id = cliente.documento or f"cliente_{cliente.id}"
+
+    produtos_status: list[dict[str, Any]] = []
+    for produto in parsed["produtos"]:
+        resultado = db.import_row(
+            session,
+            store_id=store_id,
+            name=produto["nome"] or "Produto sem nome",
+            code=produto["codigo"] or "",
+            ncm=produto["ncm"] or None,
+            unit=produto["unidade"] or None,
+            cst_icms=produto.get("cst_icms"),
+            min_fuzzy_score=90,
+        )
+        produtos_status.append(
+            {
+                "codigo": produto.get("codigo"),
+                "nome": produto.get("nome"),
+                "status": resultado.get("status"),
+            }
+        )
+
+    valor_total = _safe_decimal(parsed["valor_total"])
+    xml_text = xml_bytes.decode("utf-8", errors="ignore")
+    nfe_row = db.NfeXml(
+        client_id=cliente.id,
+        numero=parsed["numero"],
+        valor_total=valor_total,
+        emitida_em=parsed["data_emissao"],
+        xml_text=xml_text,
+        hash=xml_hash,
+    )
+    session.add(nfe_row)
+    session.flush()
+
+    return {
+        "status": "ok",
+        "hash": xml_hash,
+        "numero": parsed["numero"],
+        "cliente": cliente.nome,
+        "produtos_status": produtos_status,
+        "nfe_id": nfe_row.id,
+        "arquivo": filename,
+    }
+
+
 def adicionar_produtos_pynfe(nota_fiscal):
     """Adiciona produtos à NotaFiscal usando dados do st.session_state.produtos."""
     if not st.session_state.get("produtos"):
         raise ValueError("Nenhum produto foi adicionado. Adicione pelo menos um produto/serviço.")
-
-    regime = st.session_state.get("nfe_optante", "Simples Nacional")
 
     for i, produto in enumerate(st.session_state.produtos):
         campos_obrigatorios = {
@@ -266,11 +430,8 @@ def adicionar_produtos_pynfe(nota_fiscal):
             "valor_total": "Valor total",
             "cst_pis": "CST PIS",
             "cst_cofins": "CST COFINS",
+            "cst_icms": "CST ICMS",
         }
-        if regime in ["Simples Nacional", "MEI"]:
-            campos_obrigatorios["icms_csosn"] = "ICMS CSOSN"
-        else:
-            campos_obrigatorios["cst_icms"] = "CST ICMS"
 
         for campo, nome_campo in campos_obrigatorios.items():
             if not produto.get(campo) or str(produto.get(campo)).strip() == "":
@@ -289,9 +450,9 @@ def adicionar_produtos_pynfe(nota_fiscal):
             quantidade_tributavel=Decimal(str(produto["quantidade"])),
             valor_unitario_tributavel=Decimal(str(produto["valor_unitario"])),
             ind_total=1,
-            icms_modalidade=produto.get("icms_csosn") if regime in ["Simples Nacional", "MEI"] else produto.get("cst_icms"),
+            icms_modalidade=produto.get("cst_icms"),
             icms_origem=0,
-            icms_csosn=produto.get("icms_csosn") if regime in ["Simples Nacional", "MEI"] else None,
+            icms_csosn=None,
             pis_modalidade=produto["cst_pis"],
             cofins_modalidade=produto["cst_cofins"],
             valor_tributos_aprox=str(
@@ -567,4 +728,3 @@ def cancelar_nfe(chave_cancelamento, protocolo_cancelamento, justificativa, homo
             "cStat": None,
             "xMotivo": None,
         }
-
