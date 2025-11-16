@@ -44,6 +44,17 @@ def _safe_decimal(value: str | None) -> Decimal | None:
         return None
 
 
+def _numero_from_chave(chave: str | None) -> str:
+    if not chave or len(chave) != 44:
+        return ""
+    try:
+        return str(int(chave[22:31]))
+    except ValueError:
+        return ""
+
+
+
+
 def extrair_dados_cnpj(cnpj: str) -> dict:
     """
     Consulta a API publica.cnpj.ws e retorna os principais dados do CNPJ.
@@ -140,12 +151,23 @@ def parse_nfe_xml(xml_bytes: bytes) -> dict[str, Any]:
     root = etree.fromstring(xml_bytes, parser=XML_PARSER)
     ide = root.find(".//nfe:ide", NFE_NS)
     inf_nfe = root.find(".//nfe:infNFe", NFE_NS)
-    cancelada = False
+
     if root.tag.endswith("procEventoNFe"):
         desc = root.findtext(".//nfe:detEvento/nfe:descEvento", namespaces=NFE_NS)
-        if desc and "Cancelamento" in desc:
-            cancelada = True
+        chave_evento = root.findtext(".//nfe:chNFe", namespaces=NFE_NS) or ""
+        cancelada = bool(desc and "Cancelamento" in desc)
+        return {
+            "numero": _numero_from_chave(chave_evento),
+            "serie": "",
+            "data_emissao": root.findtext(".//nfe:dhEvento", namespaces=NFE_NS),
+            "valor_total": "0",
+            "chave": chave_evento,
+            "destinatario": {"documento": root.findtext(".//nfe:CNPJDest", namespaces=NFE_NS) or ""},
+            "produtos": [],
+            "cancelada": cancelada,
+        }
 
+    cancelada = False
     numero = _text(ide, "nfe:nNF")
     serie = _text(ide, "nfe:serie")
     data_emissao = _text(ide, "nfe:dhEmi") or _text(ide, "nfe:dEmi")
@@ -370,6 +392,31 @@ def importar_xml_document(session: Session, xml_bytes: bytes, filename: str | No
         }
 
     parsed = parse_nfe_xml(xml_bytes)
+    chave = parsed.get("chave")
+    if parsed.get("cancelada"):
+        stmt = (
+            select(db.NfeXml)
+            .where(db.NfeXml.xml_text.ilike(f"%{chave}%"))
+            .order_by(db.NfeXml.id.desc())
+            .limit(1)
+        )
+        row = session.scalars(stmt).first()
+        if row:
+            row.cancelada = True
+            row.xml_text = xml_bytes.decode("utf-8", errors="ignore")
+            row.hash = xml_hash
+            session.flush()
+            cliente_nome = session.get(db.Client, row.client_id).nome if row.client_id else ""
+            return {
+                "status": "ok",
+                "numero": row.numero,
+                "cliente": cliente_nome,
+                "cancelada": True,
+                "arquivo": filename,
+            }
+        raise ValueError(
+            f"Nota para cancelamento nao encontrada (chave {chave}). Importe a NFe correspondente antes do evento."
+        )
     if not parsed["destinatario"].get("documento"):
         raise ValueError("Documento do destinatario nao encontrado no XML.")
 

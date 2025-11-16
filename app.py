@@ -336,6 +336,23 @@ def listar_notas_emitidas(engine, limite: int = 20) -> list[tuple[int, str, Opti
         return session.execute(stmt).all()
 
 
+def obter_xml_por_chave(engine, chave: str) -> Optional[str]:
+    if not chave:
+        return None
+    try:
+        numero = str(int(chave[22:31]))
+    except ValueError:
+        return None
+    with Session(engine) as session:
+        stmt = (
+            select(db.NfeXml.xml_text)
+            .where(db.NfeXml.numero == numero)
+            .order_by(db.NfeXml.numero.desc())
+            .limit(1)
+        )
+        return session.scalars(stmt).first()
+
+
 def extrair_chave_protocolo(xml_text: str) -> tuple[str, str]:
     if not xml_text:
         return "", ""
