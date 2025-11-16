@@ -266,6 +266,7 @@ def criar_cliente_pynfe(session: Session, cliente_id: int | None = None):
         email=cliente.email or "",
         numero_documento=documento,
         indicador_ie=indicador_ie,
+        inscricao_estadual=cliente.inscricao_estadual or "",
         endereco_logradouro=cliente.logradouro or "",
         endereco_numero=cliente.numero or "",
         endereco_complemento=cliente.endereco_complemento or "",
@@ -419,6 +420,7 @@ def adicionar_produtos_pynfe(nota_fiscal):
         raise ValueError("Nenhum produto foi adicionado. Adicione pelo menos um produto/serviço.")
 
     for i, produto in enumerate(st.session_state.produtos):
+
         campos_obrigatorios = {
             "codigo": "Código do produto",
             "nome": "Nome/Descrição",
@@ -570,15 +572,23 @@ def criar_nfe_pynfe(
 
         try:
             resultado = st.session_state.comunicacao.autorizacao(modelo="nfe", nota_fiscal=xml_assinado)
-
-            return {
-                "sucesso": resultado[0] == 0,
+            sucesso = bool(resultado and resultado[0] == 0)
+            payload = {
+                "sucesso": sucesso,
                 "resultado": resultado,
                 "nota_fiscal": nota_fiscal,
                 "xml_assinado": xml_assinado,
                 "resultado_codigo": resultado[0] if resultado else "N/A",
                 "resultado_detalhes": f"Código retorno: {resultado[0] if resultado else 'N/A'}",
             }
+            if not sucesso:
+                mensagem = None
+                if resultado and len(resultado) > 1:
+                    resposta = resultado[1]
+                    if hasattr(resposta, "text"):
+                        mensagem = resposta.text
+                payload["erro"] = mensagem or payload["resultado_detalhes"]
+            return payload
         except Exception as e:
             error_details = traceback.format_exc()
             return {

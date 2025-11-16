@@ -5,3 +5,4 @@ rapidfuzz
 pandas
 lxml
 pynfe
+openpyxl
