@@ -166,8 +166,8 @@ def upsert_product_by_code(
         prod_id = p["id"]
     else:
         s.execute(text("""
-            INSERT INTO products (code, name, name_norm, ncm, unit, cst_icms)
-            VALUES (:code, :name, :name_norm, :ncm, :unit, :cst)
+            INSERT INTO products (code, name, name_norm, ncm, unit, cst_icms, active)
+            VALUES (:code, :name, :name_norm, :ncm, :unit, :cst, TRUE)
         """), {"code": code, "name": name, "name_norm": name_norm, "ncm": ncm, "unit": unit, "cst": cst_icms})
         s.flush()
         prod_id = s.execute(text("SELECT id FROM products WHERE code=:code"), {"code": code}).scalar_one()
