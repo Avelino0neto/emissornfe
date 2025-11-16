@@ -13,10 +13,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 import db
-from pynfe.entidades import Emitente, Cliente, NotaFiscal
+from pynfe.entidades import Emitente, Cliente, NotaFiscal, _fonte_dados
 from pynfe.entidades.evento import EventoCancelarNota
-from pynfe.processamento.serializacao import SerializacaoXML, _fonte_dados
-from pynfe.utils.assinatura import AssinaturaA1
+from pynfe.processamento.serializacao import SerializacaoXML
+from pynfe.processamento.assinatura import AssinaturaA1
 
 CODIGO_BRASIL = "1058"
 NFE_NS = {"nfe": "http://www.portalfiscal.inf.br/nfe"}
