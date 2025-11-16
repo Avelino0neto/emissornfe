@@ -352,6 +352,19 @@ def extrair_chave_protocolo(xml_text: str) -> tuple[str, str]:
     return chave, protocolo
 
 
+def ensure_date(value: Any, fallback: date | None = None) -> date:
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value).date()
+        except ValueError:
+            pass
+    return fallback or date.today()
+
+
 def format_currency(value: float | int | Decimal) -> str:
     return f"R$ {Decimal(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
@@ -748,8 +761,8 @@ with aba_xml:
 with aba_relatorio:
     st.subheader("Relatorio de notas emitidas")
     hoje = date.today()
-    inicio_padrao = st.session_state.get("relatorio_inicio", hoje - timedelta(days=30))
-    fim_padrao = st.session_state.get("relatorio_fim", hoje)
+    inicio_padrao = ensure_date(st.session_state.get("relatorio_inicio"), hoje - timedelta(days=30))
+    fim_padrao = ensure_date(st.session_state.get("relatorio_fim"), hoje)
     periodo = st.date_input("Período", value=(inicio_padrao, fim_padrao))
     if isinstance(periodo, tuple) and len(periodo) == 2:
         inicio_sel, fim_sel = periodo
