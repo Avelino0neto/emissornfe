@@ -140,6 +140,11 @@ def parse_nfe_xml(xml_bytes: bytes) -> dict[str, Any]:
     root = etree.fromstring(xml_bytes, parser=XML_PARSER)
     ide = root.find(".//nfe:ide", NFE_NS)
     inf_nfe = root.find(".//nfe:infNFe", NFE_NS)
+    cancelada = False
+    if root.tag.endswith("procEventoNFe"):
+        desc = root.findtext(".//nfe:detEvento/nfe:descEvento", namespaces=NFE_NS)
+        if desc and "Cancelamento" in desc:
+            cancelada = True
 
     numero = _text(ide, "nfe:nNF")
     serie = _text(ide, "nfe:serie")
@@ -203,6 +208,7 @@ def parse_nfe_xml(xml_bytes: bytes) -> dict[str, Any]:
         "chave": chave,
         "destinatario": destinatario,
         "produtos": produtos,
+        "cancelada": cancelada,
     }
 
 
@@ -399,6 +405,7 @@ def importar_xml_document(session: Session, xml_bytes: bytes, filename: str | No
         emitida_em=parsed["data_emissao"],
         xml_text=xml_text,
         hash=xml_hash,
+        cancelada=parsed.get("cancelada", False),
     )
     session.add(nfe_row)
     session.flush()
