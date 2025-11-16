@@ -7,7 +7,8 @@ import stat
 import tempfile
 import unicodedata
 from datetime import date, datetime, timedelta
-from typing import Any
+from decimal import Decimal
+from typing import Any, Optional, Iterable
 
 import pandas as pd
 import streamlit as st
@@ -297,7 +298,8 @@ def consultar_notas(engine, inicio: date, fim: date) -> list[dict[str, Any]]:
         stmt = (
             select(db.NfeXml, db.Client)
             .join(db.Client, db.NfeXml.client_id == db.Client.id)
-            .order_by(db.NfeXml.id.desc())
+            .where(db.NfeXml.cancelada.is_(False))
+            .order_by(db.NfeXml.numero.desc())
         )
         rows = session.execute(stmt).all()
 
@@ -314,13 +316,55 @@ def consultar_notas(engine, inicio: date, fim: date) -> list[dict[str, Any]]:
             {
                 "data": dt.strftime("%Y-%m-%d %H:%M") if dt else (nfe.emitida_em or ""),
                 "numero": nfe.numero,
-                "cliente": cliente.nome if cliente else "",
+                "cliente": (cliente.nome_fantasia or cliente.nome) if cliente else "",
                 "documento": cliente.documento if cliente else "",
                 "valor_total": float(nfe.valor_total or 0),
                 "hash": nfe.hash,
             }
         )
     return notas
+
+
+def listar_notas_emitidas(engine, limite: int = 20) -> list[tuple[int, str, Optional[str], str]]:
+    with Session(engine) as session:
+        stmt = (
+            select(db.NfeXml.id, db.NfeXml.numero, db.NfeXml.emitida_em, db.NfeXml.xml_text)
+            .where(db.NfeXml.cancelada.is_(False))
+            .order_by(db.NfeXml.numero.desc())
+            .limit(limite)
+        )
+        return session.execute(stmt).all()
+
+
+def extrair_chave_protocolo(xml_text: str) -> tuple[str, str]:
+    if not xml_text:
+        return "", ""
+    try:
+        root = etree.fromstring(xml_text.encode("utf-8"))
+    except Exception:
+        return "", ""
+    ns = {"nfe": "http://www.portalfiscal.inf.br/nfe"}
+    chave = ""
+    inf_nfe = root.find(".//nfe:infNFe", namespaces=ns)
+    if inf_nfe is not None:
+        chave = (inf_nfe.get("Id") or "").replace("NFe", "")
+    protocolo = root.findtext(".//nfe:protNFe/nfe:infProt/nfe:nProt", namespaces=ns) or ""
+    return chave, protocolo
+
+
+def format_currency(value: float | int | Decimal) -> str:
+    return f"R$ {Decimal(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def chunked(iterable: Iterable[str], size: int) -> list[list[str]]:
+    chunk: list[str] = []
+    for item in iterable:
+        chunk.append(item)
+        if len(chunk) == size:
+            yield chunk
+            chunk = []
+    if chunk:
+        yield chunk
 
 
 def transmitir_nfe(engine, origem: str) -> None:
@@ -350,7 +394,7 @@ def transmitir_nfe(engine, origem: str) -> None:
 
     with Session(engine) as session:
         ultimo_numero = session.execute(
-            select(db.NfeXml.numero).order_by(db.NfeXml.id.desc()).limit(1)
+            select(db.NfeXml.numero).order_by(db.NfeXml.numero.desc()).limit(1)
         ).scalar()
         if ultimo_numero:
             try:
@@ -420,6 +464,9 @@ st.session_state.setdefault("produtos", [])
 st.session_state.setdefault("produto_preselecionado", {})
 st.session_state.setdefault("busca_produtos_resultados", [])
 st.session_state.setdefault("comunicacao", None)
+st.session_state.setdefault("cancel_note_idx", None)
+st.session_state.setdefault("cancel_chave", "")
+st.session_state.setdefault("cancel_protocolo", "")
 
 st.title("Emissor NFe")
 st.caption("Acesso restrito - Streamlit + Neon")
@@ -431,6 +478,7 @@ st.subheader("Selecionar cliente")
 clientes = fetch_clients(engine)
 if not clientes:
     st.info("Nenhum cliente cadastrado ainda.")
+    cliente_obj = None
 else:
     opcoes = {f"{c.nome} ({c.documento})": c.id for c in clientes}
     nomes = list(opcoes.keys())
@@ -464,8 +512,8 @@ with st.sidebar:
     st.caption("Certificado carregado a partir dos secrets.")
     st.metric("Produtos na sessao", len(st.session_state.produtos))
 
-aba_planilha, aba_manual, aba_xml, aba_relatorio = st.tabs(
-    ["Importar planilha", "Montar manualmente", "Importar XMLs", "Relatorio"]
+aba_planilha, aba_manual, aba_xml, aba_relatorio, aba_cliente, aba_cancelar = st.tabs(
+    ["Importar planilha", "Montar manualmente", "Importar XMLs", "Relatorio", "Cadastrar cliente", "Cancelar NFe"]
 )
 
 with aba_planilha:
@@ -719,8 +767,38 @@ with aba_relatorio:
         df_rel = pd.DataFrame(notas)
         total_valor = df_rel["valor_total"].sum()
         st.metric("Quantidade de notas", len(df_rel))
-        st.metric("Valor total", f"R$ {total_valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        st.metric("Valor total", format_currency(total_valor))
         st.dataframe(df_rel)
+
+        st.subheader("Resumo por loja (formato planilha)")
+        lojas = df_rel["cliente"].unique().tolist()
+        for grupo in chunked(lojas, 2):
+            cols = st.columns(len(grupo))
+            for col, loja in zip(cols, grupo):
+                df_loja = df_rel[df_rel["cliente"] == loja].copy()
+                if df_loja.empty:
+                    continue
+                df_loja_display = df_loja[["data", "numero", "valor_total"]].copy()
+                df_loja_display.columns = ["Data", "Número", "Valor"]
+                df_loja_display["Valor"] = df_loja_display["Valor"].apply(format_currency)
+                col.markdown(f"<div style='text-align:center;font-weight:bold;'>{loja}</div>", unsafe_allow_html=True)
+                html_table = df_loja_display.to_html(index=False, border=0, justify="center")
+                col.markdown(
+                    f"<div style='border:1px solid #ddd;border-radius:6px;padding:6px;'>{html_table}</div>",
+                    unsafe_allow_html=True,
+                )
+                total_loja = float(df_loja["valor_total"].sum())
+                col.markdown(
+                    f"<div style='text-align:center;font-weight:bold;margin-top:4px;'>{format_currency(total_loja)}</div>",
+                    unsafe_allow_html=True,
+                )
+                deposito = Decimal(str(total_loja)) * Decimal("0.985")
+                col.markdown(
+                    f"<div style='text-align:center;font-weight:bold;background-color:#fff79b;padding:4px;margin-top:4px;'>"
+                    f"{format_currency(deposito)}</div>",
+                    unsafe_allow_html=True,
+                )
+
         csv = df_rel.to_csv(index=False).encode("utf-8")
         st.download_button(
             "Baixar CSV",
@@ -728,3 +806,75 @@ with aba_relatorio:
             file_name=f"relatorio_nfe_{inicio_sel}_{fim_sel}.csv",
             mime="text/csv",
         )
+
+with aba_cliente:
+    st.subheader("Cadastrar novo cliente via CNPJ")
+    cnpj_busca = st.text_input("CNPJ para buscar", value=st.session_state.get("cliente_cnpj_busca", ""))
+    if st.button("Buscar e salvar cliente"):
+        st.session_state["cliente_cnpj_busca"] = cnpj_busca
+        if not cnpj_busca:
+            st.warning("Informe um CNPJ.")
+        else:
+            with st.spinner("Consultando API publica.cnpj.ws..."):
+                try:
+                    with Session(engine) as session:
+                        dados = nfe_business.extrair_dados_cnpj(cnpj_busca)
+                        if "erro" in dados:
+                            st.error(dados["erro"])
+                        else:
+                            cliente = nfe_business.upsert_client(session, dados)
+                            session.commit()
+                            st.success(f"Cliente {cliente.nome} cadastrado/atualizado.")
+                except Exception as exc:
+                    st.error(f"Falha ao buscar/salvar CNPJ: {exc}")
+
+with aba_cancelar:
+    st.subheader("Cancelar NFe")
+    notas_emitidas = listar_notas_emitidas(engine, limite=20)
+    if not notas_emitidas:
+        st.info("Nenhuma nota encontrada para cancelamento.")
+    else:
+        opcoes_notas = [
+            f"NFe {numero} - emitida em {emitida or 'desconhecida'}" for _, numero, emitida, _ in notas_emitidas
+        ]
+        selecao_idx = st.selectbox(
+            "Selecione a nota",
+            range(len(opcoes_notas)),
+            format_func=lambda idx: opcoes_notas[idx],
+        )
+        nota_id, numero_selecionado, emitida_selecao, xml_text = notas_emitidas[selecao_idx]
+        st.write(f"Nota selecionada: {numero_selecionado} (emitida em {emitida_selecao or 'desconhecida'})")
+        chave_auto, protocolo_auto = extrair_chave_protocolo(xml_text)
+        if st.session_state.get("cancel_note_idx") != selecao_idx:
+            st.session_state["cancel_note_idx"] = selecao_idx
+            st.session_state["cancel_chave"] = chave_auto
+            st.session_state["cancel_protocolo"] = protocolo_auto
+        chave_cancelamento = st.text_input(
+            "Chave de acesso (44 dígitos)",
+            value=st.session_state.get("cancel_chave", ""),
+        )
+        protocolo_cancelamento = st.text_input(
+            "Protocolo de autorização",
+            value=st.session_state.get("cancel_protocolo", ""),
+        )
+        justificativa = st.text_area("Justificativa (mínimo 15 caracteres)")
+
+        if st.button("Cancelar NFe", type="primary"):
+            resultado = nfe_business.cancelar_nfe(
+                chave_cancelamento=chave_cancelamento.strip(),
+                protocolo_cancelamento=protocolo_cancelamento.strip(),
+                justificativa=justificativa,
+                homologacao=False,
+            )
+            if resultado.get("sucesso"):
+                with Session(engine) as session:
+                    nfe_row = session.get(db.NfeXml, nota_id)
+                    if nfe_row:
+                        nfe_row.cancelada = True
+                        session.commit()
+                st.success(f"NFe cancelada: {resultado.get('cStat')} - {resultado.get('xMotivo')}")
+            else:
+                st.error(f"Falha ao cancelar: {resultado.get('erro')}")
+                if resultado.get("erro_completo"):
+                    with st.expander("Detalhes"):
+                        st.code(resultado["erro_completo"])

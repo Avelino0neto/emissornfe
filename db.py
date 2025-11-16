@@ -99,6 +99,7 @@ class NfeXml(Base):
     emitida_em: Mapped[Optional[str]] = mapped_column(String(32))
     xml_text: Mapped[str] = mapped_column(Text, nullable=False)
     hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    cancelada: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     client: Mapped[Client] = relationship("Client")
 
@@ -118,6 +119,10 @@ def init_db(engine) -> None:
         except Exception:
             pass
         Base.metadata.create_all(conn)
+        try:
+            conn.execute(text("ALTER TABLE nfe_xmls ADD COLUMN IF NOT EXISTS cancelada BOOLEAN NOT NULL DEFAULT FALSE"))
+        except Exception:
+            pass
 
 # -------- Normalização de nome --------
 ABBREV = {
