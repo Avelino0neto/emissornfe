@@ -242,7 +242,7 @@ def read_products_dataframe(uploaded_file):
     uploaded_file.seek(0)
     name = uploaded_file.name.lower()
     if name.endswith(".csv"):
-        df = pd.read_csv(uploaded_file, dtype=str)
+        df = pd.read_csv(uploaded_file, dtype=str, sep=";")
     else:
         df = pd.read_excel(uploaded_file, dtype=str)
     df.columns = [normalize_header(col) for col in df.columns]
