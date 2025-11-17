@@ -637,13 +637,39 @@ def criar_nfe_pynfe(
 
             if sucesso and resultado and len(resultado) > 1:
                 resposta = resultado[1]
+                proc_xml = None
                 if isinstance(resposta, etree._Element):
-                    xml_assinado = resposta
+                    # Se já veio como nfeProc
+                    if resposta.tag.endswith("nfeProc") or "nfeProc" in resposta.tag:
+                        proc_xml = resposta
+                    else:
+                        prot = resposta.find(".//{http://www.portalfiscal.inf.br/nfe}protNFe")
+                        if prot is not None:
+                            proc = etree.Element(
+                                "nfeProc",
+                                attrib={"versao": "4.00"},
+                                nsmap={None: "http://www.portalfiscal.inf.br/nfe"},
+                            )
+                            proc.append(etree.fromstring(etree.tostring(xml_assinado)))
+                            proc.append(etree.fromstring(etree.tostring(prot)))
+                            proc_xml = proc
                 elif resposta_soap:
                     try:
-                        xml_assinado = etree.fromstring(resposta_soap.encode("utf-8"))
+                        resp_root = etree.fromstring(resposta_soap.encode("utf-8"))
+                        prot = resp_root.find(".//{http://www.portalfiscal.inf.br/nfe}protNFe")
+                        if prot is not None:
+                            proc = etree.Element(
+                                "nfeProc",
+                                attrib={"versao": "4.00"},
+                                nsmap={None: "http://www.portalfiscal.inf.br/nfe"},
+                            )
+                            proc.append(etree.fromstring(etree.tostring(xml_assinado)))
+                            proc.append(etree.fromstring(etree.tostring(prot)))
+                            proc_xml = proc
                     except Exception:
-                        pass
+                        proc_xml = None
+                if proc_xml is not None:
+                    xml_assinado = proc_xml
 
             payload = {
                 "sucesso": sucesso,
