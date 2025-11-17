@@ -903,7 +903,10 @@ with aba_consultar:
         st.info("Nenhuma nota encontrada nesse período.")
     else:
         df_cons = pd.DataFrame(notas_consulta)
-        st.table(df_cons)
+        total_consulta = df_cons["valor_total"].sum()
+        st.metric("Quantidade de notas", len(df_cons))
+        st.metric("Valor total", format_currency(total_consulta))
+        st.dataframe(df_cons)
         opcoes = [
             f"NFe {row['numero']} - {row['data']} - {row['cliente']}" for _, row in df_cons.iterrows()
         ]
