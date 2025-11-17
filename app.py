@@ -298,14 +298,15 @@ def parse_emitida_datetime(value: str | None) -> datetime | None:
         return None
 
 
-def consultar_notas(engine, inicio: date, fim: date) -> list[dict[str, Any]]:
+def consultar_notas(engine, inicio: date, fim: date, incluir_canceladas: bool = False) -> list[dict[str, Any]]:
     with Session(engine) as session:
         stmt = (
             select(db.NfeXml, db.Client)
             .join(db.Client, db.NfeXml.client_id == db.Client.id)
-            .where(db.NfeXml.cancelada.is_(False))
             .order_by(db.NfeXml.numero.desc())
         )
+        if not incluir_canceladas:
+            stmt = stmt.where(db.NfeXml.cancelada.is_(False))
         rows = session.execute(stmt).all()
 
     notas: list[dict[str, Any]] = []
@@ -324,7 +325,7 @@ def consultar_notas(engine, inicio: date, fim: date) -> list[dict[str, Any]]:
                 "cliente": (cliente.nome_fantasia or cliente.nome) if cliente else "",
                 "documento": cliente.documento if cliente else "",
                 "valor_total": float(nfe.valor_total or 0),
-                "hash": nfe.hash,
+                "cancelada": nfe.cancelada,
             }
         )
     return notas
@@ -898,7 +899,7 @@ with aba_consultar:
     st.session_state["consulta_inicio"] = inicio_cons
     st.session_state["consulta_fim"] = fim_cons
 
-    notas_consulta = consultar_notas(engine, inicio_cons, fim_cons)
+    notas_consulta = consultar_notas(engine, inicio_cons, fim_cons, incluir_canceladas=True)
     if not notas_consulta:
         st.info("Nenhuma nota encontrada nesse período.")
     else:

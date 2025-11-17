@@ -627,6 +627,24 @@ def criar_nfe_pynfe(
         try:
             resultado = st.session_state.comunicacao.autorizacao(modelo="nfe", nota_fiscal=xml_assinado)
             sucesso = bool(resultado and resultado[0] == 0)
+            resposta_soap = ""
+            if resultado and len(resultado) > 1:
+                resposta = resultado[1]
+                if hasattr(resposta, "text"):
+                    resposta_soap = resposta.text
+                elif isinstance(resposta, etree._Element):
+                    resposta_soap = etree.tostring(resposta, encoding="unicode")
+
+            if sucesso and resultado and len(resultado) > 1:
+                resposta = resultado[1]
+                if isinstance(resposta, etree._Element):
+                    xml_assinado = resposta
+                elif resposta_soap:
+                    try:
+                        xml_assinado = etree.fromstring(resposta_soap.encode("utf-8"))
+                    except Exception:
+                        pass
+
             payload = {
                 "sucesso": sucesso,
                 "resultado": resultado,
@@ -636,12 +654,8 @@ def criar_nfe_pynfe(
                 "resultado_detalhes": f"Código retorno: {resultado[0] if resultado else 'N/A'}",
             }
             if not sucesso:
-                mensagem = None
-                if resultado and len(resultado) > 1:
-                    resposta = resultado[1]
-                    if hasattr(resposta, "text"):
-                        mensagem = resposta.text
-                payload["erro"] = mensagem or payload["resultado_detalhes"]
+                mensagem = resposta_soap or payload["resultado_detalhes"]
+                payload["erro"] = mensagem
             return payload
         except Exception as e:
             error_details = traceback.format_exc()
