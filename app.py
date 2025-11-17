@@ -20,6 +20,11 @@ from sqlalchemy.orm import Session
 import db  # seu db.py sincrono
 import nfe_business
 
+try:
+    from brazilfiscalreport.danfe import Danfe
+except Exception:  # pragma: no cover
+    Danfe = None
+
 st.set_page_config(page_title="NFe App", page_icon=":scroll:")
 
 
@@ -352,6 +357,18 @@ def obter_xml_por_chave(engine, chave: str) -> Optional[str]:
         )
         return session.scalars(stmt).first()
 
+def obter_xml_por_numero(engine, numero: str) -> Optional[str]:
+    if not numero:
+        return None
+    with Session(engine) as session:
+        stmt = (
+            select(db.NfeXml.xml_text)
+            .where(db.NfeXml.numero == numero)
+            .order_by(db.NfeXml.id.desc())
+            .limit(1)
+        )
+        return session.scalars(stmt).first()
+
 
 def extrair_chave_protocolo(xml_text: str) -> tuple[str, str]:
     if not xml_text:
@@ -468,6 +485,7 @@ def transmitir_nfe(engine, origem: str) -> None:
     )
 
     xml_element = resultado.get("xml_assinado")
+    xml_bytes = None
     if xml_element is not None:
         xml_bytes = etree.tostring(xml_element, encoding="utf-8")
         try:
@@ -480,6 +498,34 @@ def transmitir_nfe(engine, origem: str) -> None:
                     )
         except Exception as exc:
             st.warning(f"Não foi possível salvar o XML no banco: {exc}")
+
+    if xml_bytes is not None:
+        xml_str = xml_bytes.decode("utf-8")
+        st.download_button(
+            label="📥 Baixar XML Assinado",
+            data=xml_str,
+            file_name=f"NFe_{int(dados_nfe['nfe_numero']):09d}_assinada.xml",
+            mime="application/xml",
+            key=f"download_xml_{dados_nfe['nfe_numero']}",
+        )
+        if Danfe:
+            try:
+                danfe = Danfe(xml=xml_str)
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_pdf:
+                    danfe.output(tmp_pdf.name)
+                    tmp_path = tmp_pdf.name
+                with open(tmp_path, "rb") as f_pdf:
+                    pdf_data = f_pdf.read()
+                st.download_button(
+                    label="🖨️ Baixar DANFE (PDF)",
+                    data=pdf_data,
+                    file_name=f"DANFE_{int(dados_nfe['nfe_numero']):09d}.pdf",
+                    mime="application/pdf",
+                    key=f"download_danfe_{dados_nfe['nfe_numero']}",
+                )
+                os.unlink(tmp_path)
+            except Exception as exc:
+                st.warning(f"Não foi possível gerar o DANFE: {exc}")
 
     st.session_state.produtos = []
     st.session_state.produto_preselecionado = {}
@@ -542,8 +588,8 @@ with st.sidebar:
     st.caption("Certificado carregado a partir dos secrets.")
     st.metric("Produtos na sessao", len(st.session_state.produtos))
 
-aba_planilha, aba_manual, aba_xml, aba_relatorio, aba_cliente, aba_cancelar = st.tabs(
-    ["Importar planilha", "Montar manualmente", "Importar XMLs", "Relatorio", "Cadastrar cliente", "Cancelar NFe"]
+aba_planilha, aba_manual, aba_xml, aba_relatorio, aba_consultar, aba_cliente, aba_cancelar = st.tabs(
+    ["Importar planilha", "Montar manualmente", "Importar XMLs", "Relatorio", "Consultar", "Cadastrar cliente", "Cancelar NFe"]
 )
 
 with aba_planilha:
@@ -836,6 +882,68 @@ with aba_relatorio:
             file_name=f"relatorio_nfe_{inicio_sel}_{fim_sel}.csv",
             mime="text/csv",
         )
+
+with aba_consultar:
+    st.subheader("Consultar notas emitidas")
+    hoje = date.today()
+    inicio_padrao = ensure_date(st.session_state.get("consulta_inicio"), hoje - timedelta(days=30))
+    fim_padrao = ensure_date(st.session_state.get("consulta_fim"), hoje)
+    periodo = st.date_input("Período (consulta)", value=(inicio_padrao, fim_padrao), key="consulta_periodo")
+    if isinstance(periodo, tuple) and len(periodo) == 2:
+        inicio_cons, fim_cons = periodo
+    else:
+        inicio_cons = fim_cons = ensure_date(periodo)
+    if inicio_cons > fim_cons:
+        inicio_cons, fim_cons = fim_cons, inicio_cons
+    st.session_state["consulta_inicio"] = inicio_cons
+    st.session_state["consulta_fim"] = fim_cons
+
+    notas_consulta = consultar_notas(engine, inicio_cons, fim_cons)
+    if not notas_consulta:
+        st.info("Nenhuma nota encontrada nesse período.")
+    else:
+        df_cons = pd.DataFrame(notas_consulta)
+        st.table(df_cons)
+        opcoes = [
+            f"NFe {row['numero']} - {row['data']} - {row['cliente']}" for _, row in df_cons.iterrows()
+        ]
+        idx = st.selectbox(
+            "Selecione a nota",
+            range(len(opcoes)),
+            format_func=lambda i: opcoes[i],
+            key="consulta_select",
+        )
+        nota_selecionada = df_cons.iloc[idx]
+        st.success(f"Nota selecionada: {nota_selecionada['numero']} - {nota_selecionada['cliente']}")
+        xml_texto = obter_xml_por_numero(engine, nota_selecionada["numero"])
+        if xml_texto:
+            st.download_button(
+                label="📥 Baixar XML",
+                data=xml_texto,
+                file_name=f"NFe_{int(nota_selecionada['numero']):09d}.xml",
+                mime="application/xml",
+                key=f"download_xml_consulta_{nota_selecionada['numero']}",
+            )
+            if Danfe:
+                try:
+                    danfe = Danfe(xml=xml_texto)
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_pdf:
+                        danfe.output(tmp_pdf.name)
+                        tmp_path = tmp_pdf.name
+                    with open(tmp_path, "rb") as f_pdf:
+                        pdf_data = f_pdf.read()
+                    st.download_button(
+                        label="🖨️ Baixar DANFE (PDF)",
+                        data=pdf_data,
+                        file_name=f"DANFE_{int(nota_selecionada['numero']):09d}.pdf",
+                        mime="application/pdf",
+                        key=f"download_danfe_consulta_{nota_selecionada['numero']}",
+                    )
+                    os.unlink(tmp_path)
+                except Exception as exc:
+                    st.warning(f"Não foi possível gerar o DANFE: {exc}")
+        else:
+            st.warning("XML não encontrado no banco para esta nota.")
 
 with aba_cliente:
     st.subheader("Cadastrar novo cliente via CNPJ")
