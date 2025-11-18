@@ -554,6 +554,10 @@ st.caption("Acesso restrito - Streamlit + Neon")
 
 st.session_state["nfe_data"] = date.today()
 st.session_state.setdefault("nfe_data", date.today())
+st.session_state.setdefault(
+    "observacoes_nota",
+    f"NOTA FISCAL REFERENTE PRODUTOS ENTREGUES NO DIA {date.today().strftime('%d/%m/%Y')}",
+)
 
 st.subheader("Selecionar cliente")
 clientes = fetch_clients(engine)
@@ -613,6 +617,12 @@ with aba_planilha:
         except Exception as exc:
             st.error(f"Erro ao ler arquivo: {exc}")
             arquivo = None
+
+    st.session_state["observacoes_nota"] = st.text_area(
+        "Observações para a nota",
+        value=st.session_state.get("observacoes_nota", st.session_state["observacoes_nota"]),
+        help="Edite se precisar complementar ou alterar as observações.",
+    )
 
     if st.button("Processar planilha", type="primary", disabled=arquivo is None):
         if arquivo is None:

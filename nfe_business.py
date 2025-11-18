@@ -344,6 +344,10 @@ def criar_notafiscal_pynfe(
         total_tributos += Decimal(str(produto["valor_total"])) * Decimal("0.15")
 
     nfe_data_datetime = datetime.combine(nfe_data, datetime.min.time()) if nfe_data else datetime.now()
+    observacoes = (
+        st.session_state.get("observacoes_nota")
+        or f"NOTA FISCAL REFERENTE PRODUTOS ENTREGUES NO DIA {datetime.now().strftime('%d/%m/%Y')}"
+    )
 
     return NotaFiscal(
         emitente=emitente,
@@ -367,7 +371,7 @@ def criar_notafiscal_pynfe(
         finalidade_emissao=finalidade_map.get(nfe_finalidade or "Normal", "1"),
         processo_emissao="0",
         transporte_modalidade_frete=9,
-        informacoes_adicionais_interesse_fisco="NFe emitida pelo Sistema PyNFe",
+        informacoes_adicionais_interesse_fisco=observacoes,
         totais_tributos_aproximado=total_tributos,
     )
 
