@@ -307,6 +307,10 @@ def consultar_notas(engine, inicio: date, fim: date, incluir_canceladas: bool = 
         )
         if not incluir_canceladas:
             stmt = stmt.where(db.NfeXml.cancelada.is_(False))
+        if inicio:
+            stmt = stmt.where(db.NfeXml.emitida_em >= inicio.isoformat())
+        if fim:
+            stmt = stmt.where(db.NfeXml.emitida_em <= fim.isoformat())
         rows = session.execute(stmt).all()
 
     notas: list[dict[str, Any]] = []
@@ -569,7 +573,7 @@ else:
     escolha = st.selectbox("Cliente para emissão", nomes, index=cliente_default)
     st.session_state.cliente_id = opcoes[escolha]
     cliente_obj = next(c for c in clientes if c.id == st.session_state.cliente_id)
-    with st.expander("Dados do cliente"):
+    with st.expander("Dados do cliente", expanded=True):
         st.write(
             {
                 "Documento": cliente_obj.documento,
@@ -837,7 +841,10 @@ with aba_relatorio:
     st.session_state["relatorio_inicio"] = inicio_sel
     st.session_state["relatorio_fim"] = fim_sel
 
-    notas = consultar_notas(engine, inicio_sel, fim_sel)
+    if st.button("Atualizar relatório"):
+        st.session_state["relatorio_result"] = consultar_notas(engine, inicio_sel, fim_sel)
+
+    notas = st.session_state.get("relatorio_result", [])
     if not notas:
         st.info("Nenhuma nota encontrada para o período selecionado.")
     else:
@@ -899,7 +906,12 @@ with aba_consultar:
     st.session_state["consulta_inicio"] = inicio_cons
     st.session_state["consulta_fim"] = fim_cons
 
-    notas_consulta = consultar_notas(engine, inicio_cons, fim_cons, incluir_canceladas=True)
+    if st.button("Buscar notas", key="btn_buscar_consulta"):
+        st.session_state["consulta_result"] = consultar_notas(
+            engine, inicio_cons, fim_cons, incluir_canceladas=True
+        )
+
+    notas_consulta = st.session_state.get("consulta_result", [])
     if not notas_consulta:
         st.info("Nenhuma nota encontrada nesse período.")
     else:
