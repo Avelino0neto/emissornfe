@@ -228,6 +228,13 @@ def safe_float(value, default: float = 0.0) -> float:
     if value in (None, ""):
         return default
     try:
+        if isinstance(value, str):
+            s = value.strip()
+            s = s.replace("R$", "").replace(" ", "").replace("\xa0", "")
+            if "," in s and "." in s:
+                s = s.replace(".", "")
+            s = s.replace(",", ".")
+            return float(s)
         return float(value)
     except (TypeError, ValueError):
         return default
