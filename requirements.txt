@@ -7,3 +7,4 @@ lxml
 pynfe
 openpyxl
 brazilfiscalreport
+signxml
