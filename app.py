@@ -2,9 +2,11 @@
 
 # app.py
 import base64
+import io
 import os
 import stat
 import tempfile
+import zipfile
 import unicodedata
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -937,6 +939,70 @@ with aba_consultar:
         st.metric("Quantidade de notas", len(df_cons))
         st.metric("Valor total", format_currency(total_consulta))
         st.dataframe(df_cons)
+
+        st.subheader("Download XML em lote")
+        modo_lote = st.radio(
+            "Modo de download em lote",
+            ["Seleção manual", "Período do filtro"],
+            horizontal=True,
+            key="consulta_lote_modo",
+        )
+        opcoes_lote = [
+            f"NFe {row['numero']} - {row['data']} - {row['cliente']}" for _, row in df_cons.iterrows()
+        ]
+        if modo_lote == "Seleção manual":
+            selecionadas = st.multiselect(
+                "Selecione as notas para baixar o XML em lote",
+                options=range(len(opcoes_lote)),
+                format_func=lambda i: opcoes_lote[i],
+                key="consulta_select_lote",
+            )
+            if selecionadas:
+                buffer = io.BytesIO()
+                faltando: list[str] = []
+                with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                    for i in selecionadas:
+                        row = df_cons.iloc[i]
+                        xml_texto_lote = obter_xml_por_numero(engine, row["numero"])
+                        if not xml_texto_lote:
+                            faltando.append(str(row["numero"]))
+                            continue
+                        nome_arquivo = f"NFe_{int(row['numero']):09d}.xml"
+                        zf.writestr(nome_arquivo, xml_texto_lote)
+                if faltando:
+                    st.warning("XML não encontrado no banco para as notas: " + ", ".join(faltando))
+                buffer.seek(0)
+                st.download_button(
+                    label="📦 Baixar XMLs (ZIP)",
+                    data=buffer,
+                    file_name=f"XMLs_NFe_{inicio_cons}_{fim_cons}.zip",
+                    mime="application/zip",
+                    key="download_xml_lote",
+                )
+        else:
+            buffer_periodo = io.BytesIO()
+            faltando_periodo: list[str] = []
+            with zipfile.ZipFile(buffer_periodo, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                for _, row in df_cons.iterrows():
+                    xml_texto_lote = obter_xml_por_numero(engine, row["numero"])
+                    if not xml_texto_lote:
+                        faltando_periodo.append(str(row["numero"]))
+                        continue
+                    nome_arquivo = f"NFe_{int(row['numero']):09d}.xml"
+                    zf.writestr(nome_arquivo, xml_texto_lote)
+            if faltando_periodo:
+                st.warning(
+                    "XML não encontrado no banco para as notas: " + ", ".join(faltando_periodo)
+                )
+            buffer_periodo.seek(0)
+            st.download_button(
+                label="📦 Baixar XMLs do período (ZIP)",
+                data=buffer_periodo,
+                file_name=f"XMLs_NFe_{inicio_cons}_{fim_cons}.zip",
+                mime="application/zip",
+                key="download_xml_periodo",
+            )
+
         opcoes = [
             f"NFe {row['numero']} - {row['data']} - {row['cliente']}" for _, row in df_cons.iterrows()
         ]
