@@ -685,13 +685,20 @@ def criar_nfe_pynfe(
             }
             if not sucesso:
                 mensagem = resposta_soap or payload["resultado_detalhes"]
+                if "Response [503]" in mensagem or "503" in mensagem:
+                    mensagem = (
+                        "SEFAZ indisponível (HTTP 503). Tente novamente em alguns minutos."
+                    )
                 payload["erro"] = mensagem
             return payload
         except Exception as e:
             error_details = traceback.format_exc()
+            msg = f"Erro no envio para SEFAZ: {type(e).__name__}: {str(e)}"
+            if "ReadTimeout" in msg or "Read timed out" in msg or "WinError 10060" in msg:
+                msg = "SEFAZ não respondeu a tempo (timeout). Tente novamente em alguns minutos."
             return {
                 "sucesso": False,
-                "erro": f"Erro no envio para SEFAZ: {type(e).__name__}: {str(e)}",
+                "erro": msg,
                 "erro_completo": (
                     "ERRO NO PASSO 7 - ENVIO SEFAZ:\n"
                     f"Tipo comunicação: {type(st.session_state.comunicacao)}\n{error_details}"
