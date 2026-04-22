@@ -123,6 +123,10 @@ def upsert_client(session: Session, dados: dict) -> db.Client:
 
     if client:
         for field, value in payload.items():
+            if value is None:
+                continue
+            if isinstance(value, str) and not value.strip():
+                continue
             setattr(client, field, value)
     else:
         client = db.Client(**payload)
