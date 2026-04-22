@@ -895,7 +895,7 @@ with aba_relatorio:
                     f"<div style='text-align:center;font-weight:bold;margin-top:4px;'>{format_currency(total_loja)}</div>",
                     unsafe_allow_html=True,
                 )
-                deposito = Decimal(str(total_loja)) * Decimal("0.985")
+                deposito = Decimal(str(total_loja)) * Decimal("0.9837")
                 col.markdown(
                     f"<div style='text-align:center;font-weight:bold;background-color:#fff79b;padding:4px;margin-top:4px;'>"
                     f"{format_currency(deposito)}</div>",
