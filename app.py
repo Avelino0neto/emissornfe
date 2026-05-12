@@ -1067,7 +1067,7 @@ with aba_cliente:
 
 with aba_cancelar:
     st.subheader("Cancelar NFe")
-    notas_emitidas = listar_notas_emitidas(engine, limite=20)
+    notas_emitidas = listar_notas_emitidas(engine, limite=40)
     if not notas_emitidas:
         st.info("Nenhuma nota encontrada para cancelamento.")
     else:
