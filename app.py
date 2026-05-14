@@ -794,6 +794,13 @@ with aba_manual:
     else:
         st.info("Nenhum produto na lista ainda.")
 
+    st.session_state["observacoes_nota"] = st.text_area(
+        "Observações para a nota",
+        value=st.session_state.get("observacoes_nota", st.session_state["observacoes_nota"]),
+        help="Edite se precisar complementar ou alterar as observações.",
+        key="observacoes_nota_manual",
+    )
+
     pronto_para_transmitir = bool(st.session_state.produtos and st.session_state.get("cliente_id"))
     if st.button(
         "Transmitir NFe (manual)",
