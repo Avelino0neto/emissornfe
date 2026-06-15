@@ -94,7 +94,7 @@ class NfeXml(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     client_id: Mapped[int] = mapped_column(ForeignKey("clients.id"), nullable=False, index=True)
-    numero: Mapped[str] = mapped_column(String(64), nullable=False)
+    numero: Mapped[int] = mapped_column(Integer, nullable=False)
     valor_total: Mapped[Optional[float]] = mapped_column(Numeric(14, 2))
     emitida_em: Mapped[Optional[str]] = mapped_column(String(32))
     xml_text: Mapped[str] = mapped_column(Text, nullable=False)

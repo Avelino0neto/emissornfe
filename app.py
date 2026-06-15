@@ -344,7 +344,7 @@ def consultar_notas(engine, inicio: date, fim: date, incluir_canceladas: bool = 
     return notas
 
 
-def listar_notas_emitidas(engine, limite: int = 20) -> list[tuple[int, str, Optional[str], str]]:
+def listar_notas_emitidas(engine, limite: int = 20) -> list[tuple[int, int, Optional[str], str]]:
     with Session(engine) as session:
         stmt = (
             select(db.NfeXml.id, db.NfeXml.numero, db.NfeXml.emitida_em, db.NfeXml.xml_text)
@@ -359,7 +359,7 @@ def obter_xml_por_chave(engine, chave: str) -> Optional[str]:
     if not chave:
         return None
     try:
-        numero = str(int(chave[22:31]))
+        numero = int(chave[22:31])
     except ValueError:
         return None
     with Session(engine) as session:
@@ -371,13 +371,17 @@ def obter_xml_por_chave(engine, chave: str) -> Optional[str]:
         )
         return session.scalars(stmt).first()
 
-def obter_xml_por_numero(engine, numero: str) -> Optional[str]:
+def obter_xml_por_numero(engine, numero: str | int) -> Optional[str]:
     if not numero:
+        return None
+    try:
+        numero_int = int(numero)
+    except (TypeError, ValueError):
         return None
     with Session(engine) as session:
         stmt = (
             select(db.NfeXml.xml_text)
-            .where(db.NfeXml.numero == numero)
+            .where(db.NfeXml.numero == numero_int)
             .order_by(db.NfeXml.id.desc())
             .limit(1)
         )
@@ -457,11 +461,8 @@ def transmitir_nfe(engine, origem: str) -> None:
         ultimo_numero = session.execute(
             select(db.NfeXml.numero).order_by(db.NfeXml.numero.desc()).limit(1)
         ).scalar()
-        if ultimo_numero:
-            try:
-                dados_nfe["nfe_numero"] = str(int(ultimo_numero) + 1)
-            except ValueError:
-                dados_nfe["nfe_numero"] = ultimo_numero
+        if ultimo_numero is not None:
+            dados_nfe["nfe_numero"] = str(ultimo_numero + 1)
 
     with Session(engine) as session:
         resultado = nfe_business.criar_nfe_pynfe(

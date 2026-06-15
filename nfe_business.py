@@ -453,9 +453,10 @@ def importar_xml_document(session: Session, xml_bytes: bytes, filename: str | No
 
     valor_total = _safe_decimal(parsed["valor_total"])
     xml_text = xml_bytes.decode("utf-8", errors="ignore")
+    numero_nfe = int(parsed["numero"])
     nfe_row = db.NfeXml(
         client_id=cliente.id,
-        numero=parsed["numero"],
+        numero=numero_nfe,
         valor_total=valor_total,
         emitida_em=parsed["data_emissao"],
         xml_text=xml_text,
@@ -468,7 +469,7 @@ def importar_xml_document(session: Session, xml_bytes: bytes, filename: str | No
     return {
         "status": "ok",
         "hash": xml_hash,
-        "numero": parsed["numero"],
+        "numero": numero_nfe,
         "cliente": cliente.nome,
         "produtos_status": produtos_status,
         "nfe_id": nfe_row.id,
