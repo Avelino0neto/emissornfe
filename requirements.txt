@@ -8,3 +8,5 @@ pynfe
 openpyxl
 brazilfiscalreport
 signxml
+cryptography
+msal

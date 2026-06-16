@@ -1,0 +1,7 @@
+.idea/
+__pycache__/
+*.pyc
+
+token_cache.bin
+* - Nota.xml
+Xmls/

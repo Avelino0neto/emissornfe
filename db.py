@@ -1,10 +1,11 @@
 # db.py
 from __future__ import annotations
+from datetime import datetime
 import re, unicodedata
 from typing import Iterable, Optional, Tuple, List
 
 from sqlalchemy import (
-    create_engine, text, String, Boolean, Integer, Text,
+    create_engine, text, String, Boolean, Integer, Text, DateTime,
     UniqueConstraint, Index, ForeignKey, Numeric
 )
 from sqlalchemy.orm import (
@@ -102,6 +103,14 @@ class NfeXml(Base):
     cancelada: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     client: Mapped[Client] = relationship("Client")
+
+class OAuthTokenCache(Base):
+    __tablename__ = "oauth_token_caches"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    provider: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    cache_blob: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
 # -------- Engine / init --------
 def make_engine(database_url: str):

@@ -20,6 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 import db  # seu db.py sincrono
+import graph_mail
 import nfe_business
 
 try:
@@ -432,6 +433,61 @@ def chunked(iterable: Iterable[str], size: int) -> list[list[str]]:
         yield chunk
 
 
+def get_secret_section(name: str) -> dict[str, Any]:
+    try:
+        return dict(st.secrets.get(name, {}))
+    except Exception:
+        return {}
+
+
+def enviar_xml_automatico(
+    engine,
+    *,
+    cliente: db.Client,
+    numero_nfe: str | int,
+    xml_bytes: bytes,
+) -> None:
+    email_config = get_secret_section("email_xml")
+    graph_config = get_secret_section("graph")
+
+    if not graph_mail.enabled_for_client(cliente.documento, email_config):
+        return
+
+    numero_int = int(numero_nfe)
+    cliente_nome = cliente.nome_fantasia or cliente.nome
+    documento = graph_mail.normalize_document(cliente.documento)
+    xml_filename = f"NFe_{numero_int:09d}.xml"
+    subject = f"XML NFe {numero_int} - {cliente_nome}"
+    body = (
+        f"Segue em anexo o XML da NFe {numero_int}.\n\n"
+        f"Cliente: {cliente_nome}\n"
+        f"Documento: {documento}\n"
+        f"Data: {date.today().strftime('%d/%m/%Y')}"
+    )
+
+    try:
+        with Session(engine) as session:
+            with session.begin():
+                resultado = graph_mail.send_xml_email(
+                    session,
+                    graph_config=graph_config,
+                    recipients=email_config.get("recipients", []),
+                    subject=subject,
+                    body=body,
+                    xml_bytes=xml_bytes,
+                    xml_filename=xml_filename,
+                )
+    except Exception as exc:
+        st.warning(f"NFe emitida, mas nao foi possivel enviar o XML por e-mail: {exc}")
+        return
+
+    if resultado.get("sucesso"):
+        st.success("XML enviado por e-mail automaticamente.")
+    else:
+        erro = resultado.get("erro") or "erro desconhecido"
+        st.warning(f"NFe emitida, mas nao foi possivel enviar o XML por e-mail: {erro}")
+
+
 def transmitir_nfe(engine, origem: str) -> None:
     cliente_id = st.session_state.get("cliente_id")
     produtos = st.session_state.get("produtos", [])
@@ -441,6 +497,12 @@ def transmitir_nfe(engine, origem: str) -> None:
     if not produtos:
         st.error("Adicione produtos antes de transmitir.")
         return
+
+    with Session(engine) as session:
+        cliente_email = session.get(db.Client, cliente_id)
+        if not cliente_email:
+            st.error("Cliente nao encontrado no banco.")
+            return
 
     preencher_codigos_por_alias(engine, cliente_id, produtos)
 
@@ -541,6 +603,13 @@ def transmitir_nfe(engine, origem: str) -> None:
                 os.unlink(tmp_path)
             except Exception as exc:
                 st.warning(f"Não foi possível gerar o DANFE: {exc}")
+
+        enviar_xml_automatico(
+            engine,
+            cliente=cliente_email,
+            numero_nfe=dados_nfe["nfe_numero"],
+            xml_bytes=xml_bytes,
+        )
 
     st.session_state.produtos = []
     st.session_state.produto_preselecionado = {}
