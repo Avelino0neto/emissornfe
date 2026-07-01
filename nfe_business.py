@@ -19,6 +19,7 @@ from pynfe.processamento.serializacao import SerializacaoXML
 from pynfe.processamento.assinatura import AssinaturaA1
 
 CODIGO_BRASIL = "1058"
+DEFAULT_CBENEF = "SP010410"
 NFE_NS = {"nfe": "http://www.portalfiscal.inf.br/nfe"}
 XML_PARSER = etree.XMLParser(remove_blank_text=True, recover=True)
 
@@ -223,6 +224,7 @@ def parse_nfe_xml(xml_bytes: bytes) -> dict[str, Any]:
                 "valor_unitario": _text(prod, "nfe:vUnCom"),
                 "valor_total": _text(prod, "nfe:vProd"),
                 "cst_icms": cst_icms or "40",
+                "cbenef": _text(prod, "nfe:cBenef") or DEFAULT_CBENEF,
             }
         )
 
@@ -515,6 +517,7 @@ def adicionar_produtos_pynfe(nota_fiscal):
             quantidade_tributavel=Decimal(str(produto["quantidade"])),
             valor_unitario_tributavel=Decimal(str(produto["valor_unitario"])),
             ind_total=1,
+            cbenef=produto.get("cbenef") or DEFAULT_CBENEF,
             icms_modalidade=produto.get("cst_icms"),
             icms_origem=0,
             icms_csosn=None,

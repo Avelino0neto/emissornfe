@@ -280,6 +280,7 @@ def parse_products_file(uploaded_file) -> list[dict]:
             "cst_pis": "99",
             "cst_cofins": "99",
             "cst_icms": "40",
+            "cbenef": nfe_business.DEFAULT_CBENEF,
         }
         if not registro["valor_total"]:
             registro["valor_total"] = registro["quantidade"] * registro["valor_unitario"]
@@ -751,6 +752,7 @@ with aba_manual:
                     "cst_icms": "40",
                     "cst_pis": "99",
                     "cst_cofins": "99",
+                    "cbenef": nfe_business.DEFAULT_CBENEF,
                 }
                 st.success(f"Produto '{produto_banco.name}' carregado no formulario.")
             else:
@@ -770,6 +772,7 @@ with aba_manual:
                     "cst_icms": "40",
                     "cst_pis": "99",
                     "cst_cofins": "99",
+                    "cbenef": nfe_business.DEFAULT_CBENEF,
                 }
                 st.success(f"Produto '{produto.name}' carregado no formulario.")
             else:
@@ -808,6 +811,7 @@ with aba_manual:
                 "cst_icms": "40",
                 "cst_pis": "99",
                 "cst_cofins": "99",
+                "cbenef": nfe_business.DEFAULT_CBENEF,
             }
             st.session_state["busca_produtos_resultados"] = []
             st.success(f"Produto '{item['nome']}' carregado no formulario.")
@@ -827,6 +831,7 @@ with aba_manual:
             "Valor unitario", min_value=0.0, value=valor_unitario_default, step=0.01, format="%.2f"
         )
         cst_icms = st.text_input("CST ICMS", value=pre.get("cst_icms", "40"))
+        cbenef = st.text_input("cBenef", value=pre.get("cbenef", nfe_business.DEFAULT_CBENEF))
         adicionar = st.form_submit_button("Adicionar produto", type="primary")
 
     if adicionar:
@@ -845,6 +850,7 @@ with aba_manual:
                 "cst_pis": "99",
                 "cst_cofins": "99",
                 "cst_icms": cst_icms.strip() or "40",
+                "cbenef": cbenef.strip() or nfe_business.DEFAULT_CBENEF,
             }
             st.session_state.produtos.append(novo_produto)
             preencher_codigos_por_alias(
