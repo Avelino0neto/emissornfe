@@ -20,6 +20,14 @@ from pynfe.processamento.assinatura import AssinaturaA1
 
 CODIGO_BRASIL = "1058"
 DEFAULT_CBENEF = "SP010410"
+DEFAULT_IBSCBS_CST = "200"
+DEFAULT_IBSCBS_CCLASS_TRIB = "200014"
+DEFAULT_IBSCBS_REDUCAO = Decimal("100.0000")
+DEFAULT_IBSCBS_ALIQUOTA_IBS_UF = Decimal("0.1000")
+DEFAULT_IBSCBS_ALIQUOTA_IBS_MUN = Decimal("0.0000")
+DEFAULT_IBSCBS_ALIQUOTA_CBS = Decimal("0.9000")
+DEFAULT_IBSCBS_ALIQUOTA_EFETIVA_ZERO = Decimal("0.0000")
+DEFAULT_IBSCBS_VALOR_ZERO = Decimal("0.00")
 NFE_NS = {"nfe": "http://www.portalfiscal.inf.br/nfe"}
 XML_PARSER = etree.XMLParser(remove_blank_text=True, recover=True)
 
@@ -54,6 +62,151 @@ def _numero_from_chave(chave: str | None) -> str:
         return ""
 
 
+def _format_decimal(value: Decimal | int | float | str, places: int = 2) -> str:
+    quant = Decimal("1").scaleb(-places)
+    decimal_value = Decimal(str(value or "0"))
+    return f"{decimal_value.quantize(quant):.{places}f}"
+
+
+def _tag_like(parent, tag: str) -> str:
+    if isinstance(parent.tag, str) and parent.tag.startswith("{"):
+        namespace = parent.tag.split("}", 1)[0][1:]
+        return f"{{{namespace}}}{tag}"
+    return tag
+
+
+def _sub_element(parent, tag: str):
+    return etree.SubElement(parent, _tag_like(parent, tag))
+
+
+def _local_name(node) -> str:
+    return etree.QName(node).localname if isinstance(node.tag, str) else ""
+
+
+def _find_child(parent, tag: str):
+    for child in parent:
+        if _local_name(child) == tag:
+            return child
+    return None
+
+
+def _find_text(parent, tag: str) -> str | None:
+    child = _find_child(parent, tag)
+    return child.text if child is not None else None
+
+
+def _find_all(root, tag: str) -> list:
+    return root.xpath(f".//*[local-name()='{tag}']")
+
+
+def _add_text(parent, tag: str, value: Decimal | int | float | str, places: int | None = None):
+    child = _sub_element(parent, tag)
+    child.text = _format_decimal(value, places) if places is not None else str(value)
+    return child
+
+
+def _clear_child(parent, tag: str) -> None:
+    child = _find_child(parent, tag)
+    if child is not None:
+        parent.remove(child)
+
+
+def _add_reducao_aliquota(parent) -> None:
+    g_red = _sub_element(parent, "gRed")
+    _add_text(g_red, "pRedAliq", DEFAULT_IBSCBS_REDUCAO, 4)
+    _add_text(g_red, "pAliqEfet", DEFAULT_IBSCBS_ALIQUOTA_EFETIVA_ZERO, 4)
+
+
+def _serializar_ibscbs_item(imposto, vbc: Decimal) -> None:
+    _clear_child(imposto, "IBSCBS")
+    ibscbs = _sub_element(imposto, "IBSCBS")
+    _add_text(ibscbs, "CST", DEFAULT_IBSCBS_CST)
+    _add_text(ibscbs, "cClassTrib", DEFAULT_IBSCBS_CCLASS_TRIB)
+
+    g_ibscbs = _sub_element(ibscbs, "gIBSCBS")
+    _add_text(g_ibscbs, "vBC", vbc, 2)
+
+    g_ibs_uf = _sub_element(g_ibscbs, "gIBSUF")
+    _add_text(g_ibs_uf, "pIBSUF", DEFAULT_IBSCBS_ALIQUOTA_IBS_UF, 4)
+    _add_reducao_aliquota(g_ibs_uf)
+    _add_text(g_ibs_uf, "vIBSUF", DEFAULT_IBSCBS_VALOR_ZERO, 2)
+
+    g_ibs_mun = _sub_element(g_ibscbs, "gIBSMun")
+    _add_text(g_ibs_mun, "pIBSMun", DEFAULT_IBSCBS_ALIQUOTA_IBS_MUN, 4)
+    _add_reducao_aliquota(g_ibs_mun)
+    _add_text(g_ibs_mun, "vIBSMun", DEFAULT_IBSCBS_VALOR_ZERO, 2)
+
+    _add_text(g_ibscbs, "vIBS", DEFAULT_IBSCBS_VALOR_ZERO, 2)
+
+    g_cbs = _sub_element(g_ibscbs, "gCBS")
+    _add_text(g_cbs, "pCBS", DEFAULT_IBSCBS_ALIQUOTA_CBS, 4)
+    _add_reducao_aliquota(g_cbs)
+    _add_text(g_cbs, "vCBS", DEFAULT_IBSCBS_VALOR_ZERO, 2)
+
+
+def _serializar_total_item(det, vitem: Decimal) -> None:
+    _clear_child(det, "vItem")
+    _add_text(det, "vItem", vitem, 2)
+
+
+def _serializar_ibscbs_total(total, vbc_total: Decimal, vnf_total: Decimal) -> None:
+    _clear_child(total, "IBSCBSTot")
+    _clear_child(total, "vNFTot")
+    ibscbs_tot = _sub_element(total, "IBSCBSTot")
+    _add_text(ibscbs_tot, "vBCIBSCBS", vbc_total, 2)
+
+    g_ibs = _sub_element(ibscbs_tot, "gIBS")
+    g_ibs_uf = _sub_element(g_ibs, "gIBSUF")
+    _add_text(g_ibs_uf, "vDif", DEFAULT_IBSCBS_VALOR_ZERO, 2)
+    _add_text(g_ibs_uf, "vDevTrib", DEFAULT_IBSCBS_VALOR_ZERO, 2)
+    _add_text(g_ibs_uf, "vIBSUF", DEFAULT_IBSCBS_VALOR_ZERO, 2)
+    g_ibs_mun = _sub_element(g_ibs, "gIBSMun")
+    _add_text(g_ibs_mun, "vDif", DEFAULT_IBSCBS_VALOR_ZERO, 2)
+    _add_text(g_ibs_mun, "vDevTrib", DEFAULT_IBSCBS_VALOR_ZERO, 2)
+    _add_text(g_ibs_mun, "vIBSMun", DEFAULT_IBSCBS_VALOR_ZERO, 2)
+    _add_text(g_ibs, "vIBS", DEFAULT_IBSCBS_VALOR_ZERO, 2)
+    _add_text(g_ibs, "vCredPres", DEFAULT_IBSCBS_VALOR_ZERO, 2)
+    _add_text(g_ibs, "vCredPresCondSus", DEFAULT_IBSCBS_VALOR_ZERO, 2)
+
+    g_cbs = _sub_element(ibscbs_tot, "gCBS")
+    _add_text(g_cbs, "vDif", DEFAULT_IBSCBS_VALOR_ZERO, 2)
+    _add_text(g_cbs, "vDevTrib", DEFAULT_IBSCBS_VALOR_ZERO, 2)
+    _add_text(g_cbs, "vCBS", DEFAULT_IBSCBS_VALOR_ZERO, 2)
+    _add_text(g_cbs, "vCredPres", DEFAULT_IBSCBS_VALOR_ZERO, 2)
+    _add_text(g_cbs, "vCredPresCondSus", DEFAULT_IBSCBS_VALOR_ZERO, 2)
+    _add_text(total, "vNFTot", vnf_total, 2)
+
+
+def adicionar_ibscbs_xml(nfe_xml):
+    """
+    Adiciona os grupos da NT 2025.002 para IBS/CBS antes da assinatura.
+
+    A versao PyPI atual da PyNFe usada pelo projeto ainda nao serializa esses
+    grupos. Como os produtos sao hortifruti, aplica CST 200/cClassTrib 200014
+    com reducao integral, mantendo valores de IBS/CBS zerados.
+    """
+    total_base = Decimal("0.00")
+    total_item = Decimal("0.00")
+
+    for det in _find_all(nfe_xml, "det"):
+        prod = _find_child(det, "prod")
+        imposto = _find_child(det, "imposto")
+        if prod is None or imposto is None:
+            continue
+        vbc = _safe_decimal(_find_text(prod, "vProd")) or Decimal("0.00")
+        total_base += vbc
+        total_item += vbc
+        _serializar_ibscbs_item(imposto, vbc)
+        _serializar_total_item(det, vbc)
+
+    total_rows = _find_all(nfe_xml, "total")
+    total = total_rows[0] if total_rows else None
+    if total is not None:
+        icms_tot = _find_child(total, "ICMSTot")
+        vnf_total = _safe_decimal(_find_text(icms_tot, "vNF") if icms_tot is not None else None)
+        _serializar_ibscbs_total(total, total_base, vnf_total or total_item)
+
+    return nfe_xml
 
 
 def extrair_dados_cnpj(cnpj: str) -> dict:
@@ -586,6 +739,7 @@ def criar_nfe_pynfe(
         try:
             serializador = SerializacaoXML(_fonte_dados, homologacao=homologacao)
             nfe_xml = serializador.exportar()
+            nfe_xml = adicionar_ibscbs_xml(nfe_xml)
         except Exception as e:
             error_details = traceback.format_exc()
             return {
